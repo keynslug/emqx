@@ -22,6 +22,16 @@
 -include_lib("stdlib/include/assert.hrl").
 -include_lib("proper/include/proper.hrl").
 
+%% Smoke test for opening and reopening the database
+t_open(Config) ->
+    DB = ?config(handle, Config),
+    emqx_replay_message_storage:close(DB),
+    {ok, _} = rocksdb:list_column_families(
+        filename:join(?MODULE_STRING, atom_to_list(?FUNCTION_NAME)), []
+    ),
+    {ok, DB2} = open_db(?FUNCTION_NAME),
+    emqx_replay_message_storage:close(DB2).
+
 %% Smoke test of store function
 t_store(Config) ->
     DB = ?config(handle, Config),
@@ -165,8 +175,9 @@ t_prop_iterate_stored_messages(Config) ->
                 messages(),
                 begin
                     Stream = payload_gen:interleave_streams(Streams),
-                    ok = store_message_stream(DB, Stream)
+                    ok = store_message_stream(DB, Stream),
                     % TODO actually verify some property
+                    true
                 end
             )
         )
@@ -240,11 +251,14 @@ topic_level(Entropy) ->
 all() -> emqx_common_test_helpers:all(?MODULE).
 
 init_per_testcase(TC, Config) ->
-    Filename = filename:join(?MODULE_STRING, atom_to_list(TC)),
-    ok = filelib:ensure_dir(Filename),
-    {ok, DB} = emqx_replay_message_storage:open(Filename, []),
+    {ok, DB} = open_db(TC),
     [{handle, DB} | Config].
 
 end_per_testcase(_TC, Config) ->
     DB = ?config(handle, Config),
     catch emqx_replay_message_storage:close(DB).
+
+open_db(TC) ->
+    Filename = filename:join(?MODULE_STRING, atom_to_list(TC)),
+    ok = filelib:ensure_dir(Filename),
+    emqx_replay_message_storage:open(Filename, []).

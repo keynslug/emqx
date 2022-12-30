@@ -14,6 +14,76 @@
 %% limitations under the License.
 %%--------------------------------------------------------------------
 
+%%================================================================================
+%% @doc Description of the schema
+%%
+%% Let us assume that `T' is a topic and `t' is time. These are the two
+%% dimensions used to index messages. They can be viewed as
+%% "coordinates" of an MQTT message in a 2D space.
+%%
+%% Oftentimes, when wildcard subscription is used, keys must be
+%% scanned in both dimensions simultaneously.
+%%
+%% Rocksdb allows to iterate over sorted keys very fast. This means we
+%% need to map our two-dimentional keys to a single index that is
+%% sorted in a way that helps to iterate over both time and topic
+%% without having to do a lot of random seeks.
+%%
+%% We use "zigzag" pattern to store messages, where rocksdb key is
+%% composed like like this:
+%%
+%%              |ttttt|TTTTTTTTT|tttt|
+%%                 ^       ^      ^
+%%                 |       |      |
+%%         +-------+       |      +---------+
+%%         |               |                |
+%% most significant    topic hash   least significant
+%% bits of timestamp                bits of timestamp
+%%
+%% Topic hash is level-aware: each topic level is hashed separately
+%% and the resulting hashes are bitwise-concatentated. This allows us
+%% to map topics to fixed-length bitstrings while keeping some degree
+%% of information about the hierarchy.
+%%
+%% Next important concept is what we call "tau-interval". It is time
+%% interval determined by the number of least significant bits of the
+%% timestamp found at the tail of the rocksdb key.
+%%
+%% The resulting index is a space-filling curve that looks like
+%% this in the topic-time 2D space:
+%%
+%% T ^ ---->------   |---->------   |---->------
+%%   |       --/     /      --/     /      --/
+%%   |   -<-/       |   -<-/       |   -<-/
+%%   | -/           | -/           | -/
+%%   | ---->------  | ---->------  | ---->------
+%%   |       --/    /       --/    /       --/
+%%   |   ---/      |    ---/      |    ---/
+%%   | -/          ^  -/          ^  -/
+%%   | ---->------ |  ---->------ |  ---->------
+%%   |       --/   /        --/   /        --/
+%%   |   -<-/     |     -<-/     |     -<-/
+%%   | -/         |   -/         |   -/
+%%   | ---->------|   ---->------|   ---------->
+%%   |
+%%  -+------------+-----------------------------> t
+%%        tau
+%%
+%% This structure allows to quickly seek to a the first message that
+%% was recorded in a certain tau-interval in a certain topic or a
+%% group of topics matching filter like `foo/bar/+/baz' or `foo/bar/#`.
+%%
+%% Due to its structure, for each pair of rocksdb keys K1 and K2, such
+%% that K1 > K2 and topic(K1) = topic(K2), timestamp(K1) >
+%% timestamp(K2).
+%% That is, replay doesn't reorder messages published in each
+%% individual topic.
+%%
+%% This property doesn't hold between different topics, but it's not deemed
+%% a problem right now.
+%%
+%%================================================================================
+
 -module(emqx_replay_message_storage).
 
 %% API:
@@ -48,7 +118,8 @@
 -type time() :: integer().
 
 -record(db, {
-    handle :: rocksdb:db_handle()
+    handle :: rocksdb:db_handle(),
+    column_families :: [{string(), reference()}]
 }).
 
 -record(it, {
@@ -71,9 +142,19 @@
 -spec open(file:filename_all(), options()) ->
     {ok, db()} | {error, _TODO}.
 open(Filename, Options) ->
-    case rocksdb:open(Filename, [{create_if_missing, true}, Options]) of
-        {ok, Handle} ->
-            {ok, #db{handle = Handle}};
+    ColumnFamiles =
+        case rocksdb:list_column_families(Filename, Options) of
+            {ok, ColumnFamiles0} ->
+                [{I, []} || I <- ColumnFamiles0];
+            {error, {db_open, _}} ->
+                [{"default", []}]
+        end,
+    case rocksdb:open(Filename, [{create_if_missing, true} | Options], ColumnFamiles) of
+        {ok, Handle, CFRefs} ->
+            {ok, #db{
+                handle = Handle,
+                column_families = lists:zip(ColumnFamiles, CFRefs)
+            }};
         Error ->
             Error
     end.
