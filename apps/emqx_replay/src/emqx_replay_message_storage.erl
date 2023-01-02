@@ -89,7 +89,7 @@
 %%================================================================================
 
 %% API:
--export([create_new/3, open/4]).
+-export([create_new/3, open/4, get_metrics/1]).
 -export([make_keymapper/1]).
 
 -export([store/5]).
@@ -157,7 +157,8 @@
     cf :: rocksdb:cf_handle(),
     keymapper :: keymapper(),
     write_options = [{sync, true}] :: emqx_replay_local_store:db_write_options(),
-    read_options = [] :: emqx_replay_local_store:db_write_options()
+    read_options = [] :: emqx_replay_local_store:db_write_options(),
+    metrics :: counters:counters_ref()
 }).
 
 -record(it, {
@@ -190,6 +191,31 @@
 -opaque iterator() :: #it{}.
 -type keymapper() :: #keymapper{}.
 
+%% Metrics
+%%
+%% Counters:
+
+%% Total number of messages inserted to the DB
+-define(CNT_PUT, 0).
+%% Total number of iterator advances
+-define(CNT_ITER_NEXT, 1).
+%% Number of occasions when the iterator missed the start time
+-define(CNT_ITER_MISS_TIME, 2).
+%% Number of topic hash collisions
+-define(CNT_TOPIC_COLLISION, 3).
+%% Number of times when the iterator has to jump to the next topic
+-define(CNT_ITER_MISS_TOPIC, 4).
+%% Gauges (they go in increments of 2):
+%%
+%% Average time to insert a message to the DB
+-define(GAUGE_PUT, 16).
+%% Average time to advance iterator
+-define(GAUGE_ITER_NEXT, 18).
+%% Average time to seek to the desired time
+-define(GAUGE_ITER_SEEK_TIME, 20).
+%% Average time to seek to the topic
+-define(GAUGE_ITER_SEEK_TOPIC, 22).
+
 %%================================================================================
 %% API funcions
 %%================================================================================
@@ -219,8 +245,23 @@ open(DBHandle, GenId, CFs, #schema{keymapper = Keymapper}) ->
     #db{
         handle = DBHandle,
         cf = CFHandle,
-        keymapper = Keymapper
+        keymapper = Keymapper,
+        metrics = metrics_new()
     }.
+
+-spec get_metrics(db()) -> emqx_replay_local_store:metrics().
+get_metrics(#db{metrics = CRef}) ->
+    {CRef, [
+        {counter, put, ?CNT_PUT},
+        {counter, iter_next, ?CNT_ITER_NEXT},
+        {counter, iter_miss_time, ?CNT_ITER_MISS_TIME},
+        {counter, topic_collision, ?CNT_TOPIC_COLLISION},
+        {counter, iter_miss_topic, ?CNT_ITER_MISS_TOPIC},
+        {gauge, put_time, ?GAUGE_PUT},
+        {gauge, iter_next_time, ?GAUGE_ITER_NEXT},
+        {gauge, iter_seek_time, ?GAUGE_ITER_SEEK_TIME},
+        {gauge, iter_seek_topic_time, ?GAUGE_ITER_SEEK_TOPIC}
+    ]}.
 
 -spec make_keymapper(Options) -> keymapper() when
     Options :: #{
@@ -523,6 +564,17 @@ substring(I, Offset, Size) ->
 -spec data_cf(emqx_replay_local_store:gen_id()) -> string().
 data_cf(GenId) ->
     ?MODULE_STRING ++ integer_to_list(GenId).
+
+%% @doc Metrics stuff
+
+metrics_new() ->
+    counters:new(32, [write_concurrency]).
+
+gauge_add(CRef, Index, Value) ->
+    %% Increment number of samples
+    counters:add(CRef, Index, 1),
+    %% Increment the sum
+    counters:add(CRef, Index + 1, Value).
 
 -ifdef(TEST).
 

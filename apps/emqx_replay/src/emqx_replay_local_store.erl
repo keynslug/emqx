@@ -25,7 +25,7 @@
 %% behavior callbacks:
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
--export_type([cf_refs/0, gen_id/0, db_write_options/0]).
+-export_type([cf_refs/0, gen_id/0, db_write_options/0, iterator/0]).
 
 -compile({inline, [meta_lookup/2]}).
 
@@ -33,12 +33,11 @@
 %% Type declarations
 %%================================================================================
 
-%% see rocksdb:db_options()
--type options() :: proplists:proplist().
-
 -type db_write_options() :: proplists:proplist().
 
 -type cf_refs() :: [{_CFName :: string(), _CFRef :: reference()}].
+
+-type metrics() :: {counters:counters_ref(), [{counter | gauge, atom(), non_neg_integer()}]}.
 
 -record(generation, {
     %% Module that handles data for the generation
@@ -58,7 +57,6 @@
     module :: module(),
     data :: term()
 }).
-
 -type gen_id() :: 0..16#ffff.
 
 -opaque iterator() :: #it{}.
@@ -255,11 +253,3 @@ meta_erase(Zone) ->
     ok.
 
 -undef(PERSISTENT_TERM).
-
-%% -spec store_cfs(rocksdb:db_handle(), [{string(), rocksdb:cf_handle()}]) -> ok.
-%% store_cfs(DBHandle, CFRefs) ->
-%%     lists:foreach(
-%%       fun({CFName, CFRef}) ->
-%%               persistent_term:put({self(), CFName}, {DBHandle, CFRef})
-%%       end,
-%%       CFRefs).
