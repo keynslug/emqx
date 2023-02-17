@@ -54,7 +54,6 @@
 -import(
     emqx_misc,
     [
-        maybe_apply/2,
         start_timer/2
     ]
 ).
@@ -116,7 +115,6 @@
 
 -type ws_cmd() :: {active, boolean()} | close.
 
--define(ACTIVE_N, 100).
 -define(INFO_KEYS, [socktype, peername, sockname, sockstate]).
 -define(SOCK_STATS, [recv_oct, recv_cnt, send_oct, send_cnt]).
 
@@ -156,7 +154,7 @@ info(limiter, #state{limiter = Limiter}) ->
 info(channel, #state{channel = Channel}) ->
     emqx_channel:info(Channel);
 info(gc_state, #state{gc_state = GcSt}) ->
-    maybe_apply(fun emqx_gc:info/1, GcSt);
+    emqx_maybe:apply(fun emqx_gc:info/1, GcSt);
 info(postponed, #state{postponed = Postponed}) ->
     Postponed;
 info(stats_timer, #state{stats_timer = TRef}) ->

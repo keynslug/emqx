@@ -481,7 +481,7 @@ frame_options(Options) ->
 
 -spec init_gc_state(map()) -> emqx_gc:gc_state() | undefined.
 init_gc_state(Options) ->
-    emqx_misc:maybe_apply(fun emqx_gc:init/1, force_gc_policy(Options)).
+    emqx_maybe:apply(fun emqx_gc:init/1, force_gc_policy(Options)).
 
 -spec force_gc_policy(map()) -> emqx_gc:opts() | undefined.
 force_gc_policy(Options) ->

@@ -64,8 +64,7 @@
     emqx_misc,
     [
         run_fold/3,
-        pipeline/3,
-        maybe_apply/2
+        pipeline/3
     ]
 ).
 
@@ -199,11 +198,11 @@ info(clientid, #channel{clientinfo = ClientInfo}) ->
 info(username, #channel{clientinfo = ClientInfo}) ->
     maps:get(username, ClientInfo, undefined);
 info(session, #channel{session = Session}) ->
-    maybe_apply(fun emqx_session:info/1, Session);
+    emqx_maybe:apply(fun emqx_session:info/1, Session);
 info(conn_state, #channel{conn_state = ConnState}) ->
     ConnState;
 info(keepalive, #channel{keepalive = Keepalive}) ->
-    maybe_apply(fun emqx_keepalive:info/1, Keepalive);
+    emqx_maybe:apply(fun emqx_keepalive:info/1, Keepalive);
 info(will_msg, #channel{will_msg = undefined}) ->
     undefined;
 info(will_msg, #channel{will_msg = WillMsg}) ->

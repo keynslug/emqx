@@ -24,7 +24,6 @@
 
 -export([
     merge_opts/2,
-    maybe_apply/2,
     compose/1,
     compose/2,
     run_fold/3,
@@ -106,16 +105,6 @@ merge_opts(Defaults, Options) ->
         Defaults,
         Options
     ).
-
-%% @doc Apply a function to a maybe argument.
--spec maybe_apply(fun((maybe(A)) -> maybe(A)), maybe(A)) ->
-    maybe(A)
-when
-    A :: any().
-maybe_apply(_Fun, undefined) ->
-    undefined;
-maybe_apply(Fun, Arg) when is_function(Fun) ->
-    erlang:apply(Fun, [Arg]).
 
 -spec compose(list(F)) -> G when
     F :: fun((any()) -> any()),

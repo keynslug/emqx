@@ -56,10 +56,6 @@ t_merge_opts(_) ->
         lists:sort(Opts)
     ).
 
-t_maybe_apply(_) ->
-    ?assertEqual(undefined, emqx_misc:maybe_apply(fun(A) -> A end, undefined)),
-    ?assertEqual(a, emqx_misc:maybe_apply(fun(A) -> A end, a)).
-
 t_run_fold(_) ->
     ?assertEqual(1, emqx_misc:run_fold([], 1, state)),
     Add = fun(I, St) -> I + St end,

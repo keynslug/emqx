@@ -218,7 +218,7 @@ info(conn_state, #channel{conn_state = ConnState}) ->
 info(clientinfo, #channel{clientinfo = ClientInfo}) ->
     ClientInfo;
 info(session, #channel{session = Session}) ->
-    emqx_misc:maybe_apply(fun emqx_session:info/1, Session);
+    emqx_maybe:apply(fun emqx_session:info/1, Session);
 info(will_msg, #channel{will_msg = WillMsg}) ->
     WillMsg;
 info(clientid, #channel{clientinfo = #{clientid := ClientId}}) ->
