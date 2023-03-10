@@ -76,6 +76,7 @@ desc(local_storage) ->
 schema(filemeta) ->
     #{
         roots => [
+            % TODO nonempty
             {name, hoconsc:mk(string(), #{required => true})},
             {size, hoconsc:mk(non_neg_integer())},
             {expire_at, hoconsc:mk(non_neg_integer())},

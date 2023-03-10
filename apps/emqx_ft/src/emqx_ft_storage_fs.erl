@@ -49,15 +49,12 @@
 -export([ready_transfers/1]).
 -export([get_ready_transfer/2]).
 
--export([open_file/3]).
--export([complete/4]).
--export([write/2]).
--export([discard/1]).
-
 -export_type([storage/0]).
 -export_type([filefrag/1]).
 -export_type([filefrag/0]).
 -export_type([transferinfo/0]).
+
+-export_type([file_error/0]).
 
 -type transfer() :: emqx_ft:transfer().
 -type offset() :: emqx_ft:offset().
@@ -90,7 +87,6 @@
 
 -define(FRAGDIR, frags).
 -define(TEMPDIR, tmp).
--define(RESULTDIR, result).
 -define(MANIFEST, "MANIFEST.json").
 -define(SEGMENT, "SEG").
 
@@ -138,7 +134,9 @@ store_filemeta(Storage, Transfer, Meta) ->
             % about it too much now.
             {error, conflict};
         {error, Reason} when Reason =:= notfound; Reason =:= corrupted; Reason =:= enoent ->
-            write_file_atomic(Storage, Transfer, Filepath, encode_filemeta(Meta))
+            write_file_atomic(Storage, Transfer, Filepath, encode_filemeta(Meta));
+        {error, _} = Error ->
+            Error
     end.
 
 %% Store a segment in the backing filesystem.
@@ -158,12 +156,12 @@ read_filemeta(Storage, Transfer) ->
     Filepath = mk_filepath(Storage, Transfer, get_subdirs_for(fragment), ?MANIFEST),
     read_file(Filepath, fun decode_filemeta/1).
 
--spec list(storage(), transfer(), _What :: fragment | result) ->
+-spec list(storage(), transfer(), _What :: fragment) ->
     % Some lower level errors? {error, notfound}?
     % Result will contain zero or only one filemeta.
     {ok, [filefrag({filemeta, filemeta()} | {segment, segmentinfo()})]}
     | {error, file_error()}.
-list(Storage, Transfer, What) ->
+list(Storage, Transfer, What = fragment) ->
     Dirname = mk_filedir(Storage, Transfer, get_subdirs_for(What)),
     case file:list_dir(Dirname) of
         {ok, Filenames} ->
@@ -172,17 +170,12 @@ list(Storage, Transfer, What) ->
             % extremely bad luck is needed for that, e.g. concurrent assemblers with
             % different filemetas from different nodes). This might be unexpected for a
             % client given the current protocol, yet might be helpful in the future.
-            {ok, filtermap_files(get_filefrag_fun_for(What), Dirname, Filenames)};
+            {ok, filtermap_files(fun mk_filefrag/2, Dirname, Filenames)};
         {error, enoent} ->
             {ok, []};
         {error, _} = Error ->
             Error
     end.
-
-get_filefrag_fun_for(fragment) ->
-    fun mk_filefrag/2;
-get_filefrag_fun_for(result) ->
-    fun mk_result_filefrag/2.
 
 -spec pread(storage(), transfer(), filefrag(), offset(), _Size :: non_neg_integer()) ->
     {ok, _Content :: iodata()} | {error, eof} | {error, file_error()}.
@@ -210,8 +203,12 @@ pread(_Storage, _Transfer, Frag, Offset, Size) ->
     {async, _Assembler :: pid()} | {error, _TODO}.
 assemble(Storage, Transfer, Size) ->
     % TODO: ask cluster if the transfer is already assembled
+    {ExporterMod, Writer} = start_writer(Storage),
     {ok, Pid} = emqx_ft_assembler_sup:ensure_child(Storage, Transfer, Size),
     {async, Pid}.
+
+start_writer(#{exporter := Exporter}, ...) ->
+    emqx_ft_storage_fs_exporter:start(Exporter, ...).
 
 get_ready_transfer(_Storage, ReadyTransferId) ->
     case parse_ready_transfer_id(ReadyTransferId) of
@@ -365,7 +362,7 @@ read_transferinfo(Storage, Transfer, Acc) ->
 get_subdir(Storage, Transfer) ->
     mk_filedir(Storage, Transfer, []).
 
--spec get_subdir(storage(), transfer(), fragment | temporary | result) ->
+-spec get_subdir(storage(), transfer(), fragment | temporary) ->
     file:name().
 get_subdir(Storage, Transfer, What) ->
     mk_filedir(Storage, Transfer, get_subdirs_for(What)).
@@ -373,76 +370,7 @@ get_subdir(Storage, Transfer, What) ->
 get_subdirs_for(fragment) ->
     [?FRAGDIR];
 get_subdirs_for(temporary) ->
-    [?TEMPDIR];
-get_subdirs_for(result) ->
-    [?RESULTDIR].
-
-%%
-
--type handle() :: {file:name(), io:device(), crypto:hash_state()}.
-
--spec open_file(storage(), transfer(), filemeta()) ->
-    {ok, handle()} | {error, file_error()}.
-open_file(Storage, Transfer, Filemeta) ->
-    Filename = maps:get(name, Filemeta),
-    TempFilepath = mk_temp_filepath(Storage, Transfer, Filename),
-    _ = filelib:ensure_dir(TempFilepath),
-    case file:open(TempFilepath, [write, raw, binary]) of
-        {ok, Handle} ->
-            % TODO: preserve filemeta
-            {ok, {TempFilepath, Handle, init_checksum(Filemeta)}};
-        {error, _} = Error ->
-            Error
-    end.
-
--spec write(handle(), iodata()) ->
-    {ok, handle()} | {error, file_error()}.
-write({Filepath, IoDevice, Ctx}, IoData) ->
-    case file:write(IoDevice, IoData) of
-        ok ->
-            {ok, {Filepath, IoDevice, update_checksum(Ctx, IoData)}};
-        {error, _} = Error ->
-            Error
-    end.
-
--spec complete(storage(), transfer(), filemeta(), handle()) ->
-    ok | {error, {checksum, _Algo, _Computed}} | {error, file_error()}.
-complete(Storage, Transfer, Filemeta = #{name := Filename}, Handle = {Filepath, IoDevice, Ctx}) ->
-    TargetFilepath = mk_filepath(Storage, Transfer, get_subdirs_for(result), Filename),
-    case verify_checksum(Ctx, Filemeta) of
-        ok ->
-            ok = file:close(IoDevice),
-            mv_temp_file(Filepath, TargetFilepath);
-        {error, _} = Error ->
-            _ = discard(Handle),
-            Error
-    end.
-
--spec discard(handle()) ->
-    ok.
-discard({Filepath, IoDevice, _Ctx}) ->
-    ok = file:close(IoDevice),
-    file:delete(Filepath).
-
-init_checksum(#{checksum := {Algo, _}}) ->
-    crypto:hash_init(Algo);
-init_checksum(#{}) ->
-    undefined.
-
-update_checksum(Ctx, IoData) when Ctx /= undefined ->
-    crypto:hash_update(Ctx, IoData);
-update_checksum(undefined, _IoData) ->
-    undefined.
-
-verify_checksum(Ctx, #{checksum := {Algo, Digest}}) when Ctx /= undefined ->
-    case crypto:hash_final(Ctx) of
-        Digest ->
-            ok;
-        Mismatch ->
-            {error, {checksum, Algo, binary:encode_hex(Mismatch)}}
-    end;
-verify_checksum(undefined, _) ->
-    ok.
+    [?TEMPDIR].
 
 -define(PRELUDE(Vsn, Meta), [<<"filemeta">>, Vsn, Meta]).
 
@@ -490,33 +418,12 @@ try_list_dir(Dirname) ->
     end.
 
 get_storage_root(Storage) ->
-    maps:get(root, Storage, filename:join(emqx:data_dir(), "file_transfer")).
+    maps:get(root, Storage, filename:join([emqx:data_dir(), "ft", "transfers"])).
 
 -include_lib("kernel/include/file.hrl").
 
-read_file(Filepath) ->
-    file:read_file(Filepath).
-
 read_file(Filepath, DecodeFun) ->
-    case read_file(Filepath) of
-        {ok, Content} ->
-            safe_decode(Content, DecodeFun);
-        {error, _} = Error ->
-            Error
-    end.
-
-safe_decode(Content, DecodeFun) ->
-    try
-        {ok, DecodeFun(Content)}
-    catch
-        C:E:Stacktrace ->
-            ?tp(warning, "safe_decode_failed", #{
-                class => C,
-                exception => E,
-                stacktrace => Stacktrace
-            }),
-            {error, corrupted}
-    end.
+    emqx_ft_fs_util:read_decode_file(Filepath, DecodeFun).
 
 write_file_atomic(Storage, Transfer, Filepath, Content) when is_binary(Content) ->
     TempFilepath = mk_temp_filepath(Storage, Transfer, filename:basename(Filepath)),
