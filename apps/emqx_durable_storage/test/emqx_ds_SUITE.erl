@@ -72,7 +72,7 @@ t_01_smoke_store(_Config) ->
     DB = default,
     ?assertMatch(ok, emqx_ds:open_db(DB, opts())),
     Msg = message(<<"foo/bar">>, <<"foo">>, 0),
-    ?assertMatch(ok, emqx_ds:store_batch(DB, [Msg])).
+    ?assertMatch([ok], emqx_ds:store_batch(DB, [Msg])).
 
 %% A simple smoke test that verifies that getting the list of streams
 %% doesn't crash and that iterators can be opened.
@@ -97,7 +97,7 @@ t_03_smoke_iterate(_Config) ->
         message(<<"foo">>, <<"2">>, 1),
         message(<<"bar/bar">>, <<"3">>, 2)
     ],
-    ?assertMatch(ok, emqx_ds:store_batch(DB, Msgs)),
+    ?assertMatch([ok, ok, ok], emqx_ds:store_batch(DB, Msgs)),
     [{_, Stream}] = emqx_ds:get_streams(DB, TopicFilter, StartTime),
     {ok, Iter0} = emqx_ds:make_iterator(DB, Stream, TopicFilter, StartTime),
     {ok, Iter, Batch} = iterate(DB, Iter0, 1),
@@ -118,7 +118,7 @@ t_04_restart(_Config) ->
         message(<<"foo">>, <<"2">>, 1),
         message(<<"bar/bar">>, <<"3">>, 2)
     ],
-    ?assertMatch(ok, emqx_ds:store_batch(DB, Msgs)),
+    ?assertMatch([ok, ok, ok], emqx_ds:store_batch(DB, Msgs)),
     [{_, Stream}] = emqx_ds:get_streams(DB, TopicFilter, StartTime),
     {ok, Iter0} = emqx_ds:make_iterator(DB, Stream, TopicFilter, StartTime),
     %% Restart the application:
@@ -141,7 +141,7 @@ t_05_update_iterator(_Config) ->
         message(<<"foo">>, <<"2">>, 1),
         message(<<"bar/bar">>, <<"3">>, 2)
     ],
-    ?assertMatch(ok, emqx_ds:store_batch(DB, Msgs)),
+    ?assertMatch([ok, ok, ok], emqx_ds:store_batch(DB, Msgs)),
     [{_, Stream}] = emqx_ds:get_streams(DB, TopicFilter, StartTime),
     {ok, Iter0} = emqx_ds:make_iterator(DB, Stream, TopicFilter, StartTime),
     Res0 = emqx_ds:next(DB, Iter0, 1),
@@ -176,7 +176,7 @@ t_06_update_config(_Config) ->
             fun
                 (Datas, {true, TimeAcc, MsgAcc}) ->
                     Msgs = ToMsgs(Datas),
-                    ?assertMatch(ok, emqx_ds:store_batch(DB, Msgs)),
+                    ?assertMatch([ok | _], emqx_ds:store_batch(DB, Msgs)),
                     {false, TimeAcc, [Msgs | MsgAcc]};
                 (Datas, {Any, TimeAcc, MsgAcc}) ->
                     timer:sleep(500),
@@ -184,7 +184,7 @@ t_06_update_config(_Config) ->
                     timer:sleep(500),
                     StartTime = emqx_message:timestamp_now(),
                     Msgs = ToMsgs(Datas),
-                    ?assertMatch(ok, emqx_ds:store_batch(DB, Msgs)),
+                    ?assertMatch([ok | _], emqx_ds:store_batch(DB, Msgs)),
                     {Any, [StartTime | TimeAcc], [Msgs | MsgAcc]}
             end,
             {true, [emqx_message:timestamp_now()], []},
@@ -220,7 +220,7 @@ t_07_add_generation(_Config) ->
             fun
                 (Datas, {true, TimeAcc, MsgAcc}) ->
                     Msgs = ToMsgs(Datas),
-                    ?assertMatch(ok, emqx_ds:store_batch(DB, Msgs)),
+                    ?assertMatch([ok | _], emqx_ds:store_batch(DB, Msgs)),
                     {false, TimeAcc, [Msgs | MsgAcc]};
                 (Datas, {Any, TimeAcc, MsgAcc}) ->
                     timer:sleep(500),
@@ -228,7 +228,7 @@ t_07_add_generation(_Config) ->
                     timer:sleep(500),
                     StartTime = emqx_message:timestamp_now(),
                     Msgs = ToMsgs(Datas),
-                    ?assertMatch(ok, emqx_ds:store_batch(DB, Msgs)),
+                    ?assertMatch([ok | _], emqx_ds:store_batch(DB, Msgs)),
                     {Any, [StartTime | TimeAcc], [Msgs | MsgAcc]}
             end,
             {true, [emqx_message:timestamp_now()], []},
@@ -431,7 +431,7 @@ t_drop_generation_with_never_used_iterator(_Config) ->
         message(<<"foo/bar">>, <<"1">>, 0),
         message(<<"foo/baz">>, <<"2">>, 1)
     ],
-    ?assertMatch(ok, emqx_ds:store_batch(DB, Msgs0)),
+    ?assertMatch([ok, ok], emqx_ds:store_batch(DB, Msgs0)),
 
     [{_, Stream0}] = emqx_ds:get_streams(DB, TopicFilter, StartTime),
     {ok, Iter0} = emqx_ds:make_iterator(DB, Stream0, TopicFilter, StartTime),
@@ -444,7 +444,7 @@ t_drop_generation_with_never_used_iterator(_Config) ->
         message(<<"foo/bar">>, <<"3">>, Now + 100),
         message(<<"foo/baz">>, <<"4">>, Now + 101)
     ],
-    ?assertMatch(ok, emqx_ds:store_batch(DB, Msgs1)),
+    ?assertMatch([ok, ok], emqx_ds:store_batch(DB, Msgs1)),
 
     ?assertMatch({ok, end_of_stream, []}, iterate(DB, Iter0, 1)),
 
@@ -477,7 +477,7 @@ t_drop_generation_with_used_once_iterator(_Config) ->
             message(<<"foo/bar">>, <<"1">>, 0),
             message(<<"foo/baz">>, <<"2">>, 1)
         ],
-    ?assertMatch(ok, emqx_ds:store_batch(DB, Msgs0)),
+    ?assertMatch([ok, ok], emqx_ds:store_batch(DB, Msgs0)),
 
     [{_, Stream0}] = emqx_ds:get_streams(DB, TopicFilter, StartTime),
     {ok, Iter0} = emqx_ds:make_iterator(DB, Stream0, TopicFilter, StartTime),
@@ -493,7 +493,7 @@ t_drop_generation_with_used_once_iterator(_Config) ->
         message(<<"foo/bar">>, <<"3">>, Now + 100),
         message(<<"foo/baz">>, <<"4">>, Now + 101)
     ],
-    ?assertMatch(ok, emqx_ds:store_batch(DB, Msgs1)),
+    ?assertMatch([ok, ok], emqx_ds:store_batch(DB, Msgs1)),
 
     ?assertMatch({ok, end_of_stream, []}, iterate(DB, Iter1, 1)),
 
@@ -513,7 +513,7 @@ t_drop_generation_update_iterator(_Config) ->
         message(<<"foo/bar">>, <<"1">>, 0),
         message(<<"foo/baz">>, <<"2">>, 1)
     ],
-    ?assertMatch(ok, emqx_ds:store_batch(DB, Msgs0)),
+    ?assertMatch([ok, ok], emqx_ds:store_batch(DB, Msgs0)),
 
     [{_, Stream0}] = emqx_ds:get_streams(DB, TopicFilter, StartTime),
     {ok, Iter0} = emqx_ds:make_iterator(DB, Stream0, TopicFilter, StartTime),
@@ -541,7 +541,7 @@ t_make_iterator_stale_stream(_Config) ->
         message(<<"foo/bar">>, <<"1">>, 0),
         message(<<"foo/baz">>, <<"2">>, 1)
     ],
-    ?assertMatch(ok, emqx_ds:store_batch(DB, Msgs0)),
+    ?assertMatch([ok, ok], emqx_ds:store_batch(DB, Msgs0)),
 
     [{_, Stream0}] = emqx_ds:get_streams(DB, TopicFilter, StartTime),
 

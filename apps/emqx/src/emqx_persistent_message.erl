@@ -83,7 +83,10 @@ needs_persistence(Msg) ->
 
 -spec store_message(emqx_types:message()) -> emqx_ds:store_batch_result().
 store_message(Msg) ->
-    emqx_ds:store_batch(?PERSISTENT_MESSAGE_DB, [Msg], #{sync => false}).
+    case emqx_ds:store_batch(?PERSISTENT_MESSAGE_DB, [Msg], #{}) of
+        [ok] -> ok;
+        [error] -> {error, timeout}
+    end.
 
 has_subscribers(#message{topic = Topic}) ->
     emqx_persistent_session_ds_router:has_any_route(Topic).

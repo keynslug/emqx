@@ -250,9 +250,11 @@ persist_publish(Msg) ->
     case emqx_persistent_message:persist(Msg) of
         ok ->
             [persisted];
-        {_SkipOrError, _Reason} ->
+        {skipped, _Reason} ->
+            [];
+        {error, _Reason} = Error ->
             % TODO: log errors?
-            []
+            [Error]
     end.
 
 %% Called internally

@@ -27,6 +27,8 @@
 %% servers, if needed.
 -module(emqx_ds_replication_layer_egress).
 
+-include_lib("emqx_utils/include/emqx_message.hrl").
+
 -behaviour(gen_server).
 
 %% API:
@@ -47,11 +49,14 @@
 %% Type declarations
 %%================================================================================
 
--define(via(DB, Shard), {via, gproc, {n, l, {?MODULE, DB, Shard}}}).
--define(flush, flush).
+-define(ACCUM_TIMEOUT, 3).
+-define(DRAIN_TIMEOUT, 1).
 
--record(enqueue_req, {message :: emqx_types:message(), sync :: boolean()}).
--record(enqueue_atomic_req, {batch :: [emqx_types:message()], sync :: boolean()}).
+-define(COOLDOWN_TIMEOUT_MIN, 1000).
+-define(COOLDOWN_TIMEOUT_MAX, 5000).
+
+-define(name(DB, Shard), {n, l, {?MODULE, DB, Shard}}).
+-define(via(DB, Shard), {via, gproc, ?name(DB, Shard)}).
 
 %%================================================================================
 %% API functions
@@ -62,37 +67,46 @@ start_link(DB, Shard) ->
     gen_server:start_link(?via(DB, Shard), ?MODULE, [DB, Shard], []).
 
 -spec store_batch(emqx_ds:db(), [emqx_types:message()], emqx_ds:message_store_opts()) ->
-    ok.
-store_batch(DB, Messages, Opts) ->
-    Sync = maps:get(sync, Opts, true),
-    case maps:get(atomic, Opts, false) of
-        false ->
-            lists:foreach(
-                fun(Message) ->
-                    Shard = emqx_ds_replication_layer:shard_of_message(DB, Message, clientid),
-                    gen_server:call(?via(DB, Shard), #enqueue_req{
-                        message = Message,
-                        sync = Sync
-                    })
-                end,
-                Messages
-            );
+    [ok | error].
+store_batch(DB, Messages = [First | Rest], #{atomic := true}) ->
+    Shard = shard_of_message(DB, First),
+    case lists:all(fun(M) -> shard_of_message(DB, M) == Shard end, Rest) of
         true ->
-            maps:foreach(
-                fun(Shard, Batch) ->
-                    gen_server:call(?via(DB, Shard), #enqueue_atomic_req{
-                        batch = Batch,
-                        sync = Sync
-                    })
-                end,
-                maps:groups_from_list(
-                    fun(Message) ->
-                        emqx_ds_replication_layer:shard_of_message(DB, Message, clientid)
-                    end,
-                    Messages
-                )
-            )
-    end.
+            Pid = self(),
+            Ref = erlang:make_ref(),
+            _ = gproc:send(?name(DB, Shard), {Pid, Ref, {atomic, length(Messages), Messages}}),
+            %% FIXME
+            receive
+                {Ref, Result} -> Result
+            end;
+        false ->
+            {error, unrecoverable, multi_shard_atomic_batch}
+    end;
+store_batch(_DB, [], #{atomic := true}) ->
+    ok;
+store_batch(DB, Messages, #{}) ->
+    Pid = self(),
+    Refs = lists:map(
+        fun(Message) ->
+            Ref = erlang:make_ref(),
+            Shard = shard_of_message(DB, Message),
+            _ = gproc:send(?name(DB, Shard), {Pid, Ref, Message}),
+            Ref
+        end,
+        Messages
+    ),
+    %% FIXME
+    lists:map(
+        fun(Ref) ->
+            receive
+                {Ref, Result} -> Result
+            end
+        end,
+        Refs
+    ).
+
+shard_of_message(DB, Message) ->
+    emqx_ds_replication_layer:shard_of_message(DB, Message, clientid).
 
 %%================================================================================
 %% behavior callbacks
@@ -100,40 +114,30 @@ store_batch(DB, Messages, Opts) ->
 
 -record(s, {
     db :: emqx_ds:db(),
-    shard :: emqx_ds_replication_layer:shard_id(),
-    leader :: node(),
-    n = 0 :: non_neg_integer(),
-    tref :: reference(),
-    batch = [] :: [emqx_types:message()],
-    pending_replies = [] :: [gen_server:from()]
+    shard :: emqx_ds_replication_layer:shard_id()
 }).
 
 init([DB, Shard]) ->
     process_flag(trap_exit, true),
     process_flag(message_queue_data, off_heap),
-    %% TODO: adjust leader dynamically
-    Leader = shard_leader(DB, Shard),
     S = #s{
         db = DB,
-        shard = Shard,
-        leader = Leader,
-        tref = start_timer()
+        shard = Shard
     },
     {ok, S}.
 
-handle_call(#enqueue_req{message = Msg, sync = Sync}, From, S) ->
-    do_enqueue(From, Sync, Msg, S);
-handle_call(#enqueue_atomic_req{batch = Batch, sync = Sync}, From, S) ->
-    Len = length(Batch),
-    do_enqueue(From, Sync, {atomic, Len, Batch}, S);
 handle_call(_Call, _From, S) ->
     {reply, {error, unknown_call}, S}.
 
 handle_cast(_Cast, S) ->
     {noreply, S}.
 
-handle_info(?flush, S) ->
-    {noreply, do_flush(S)};
+handle_info(Req = {_Pid, _Ref, _}, S) ->
+    ok = timer:sleep(?ACCUM_TIMEOUT),
+    Requests = drain_requests_start(Req, max_batch_size()),
+    _ = flush(Requests, S),
+    true = erlang:garbage_collect(),
+    {noreply, S};
 handle_info(_Info, S) ->
     {noreply, S}.
 
@@ -148,69 +152,60 @@ terminate(_Reason, _S) ->
 %% Internal functions
 %%================================================================================
 
-do_flush(S = #s{batch = []}) ->
-    S#s{tref = start_timer()};
-do_flush(
-    S = #s{batch = Messages, pending_replies = Replies, db = DB, shard = Shard, leader = Leader}
-) ->
-    Batch = #{?tag => ?BATCH, ?batch_messages => lists:reverse(Messages)},
-    ok = emqx_ds_proto_v2:store_batch(Leader, DB, Shard, Batch, #{}),
-    [gen_server:reply(From, ok) || From <- lists:reverse(Replies)],
-    ?tp(emqx_ds_replication_layer_egress_flush, #{db => DB, shard => Shard, batch => Messages}),
-    erlang:garbage_collect(),
-    S#s{
-        n = 0,
-        batch = [],
-        pending_replies = [],
-        tref = start_timer()
-    }.
+drain_requests_start(Req = {_Pid, _Ref, #message{}}, MaxBatchSize) ->
+    [Req | drain_requests(1, MaxBatchSize)];
+drain_requests_start(Req = {_Pid, _Ref, {atomic, N, _}}, MaxBatchSize) ->
+    [Req | drain_requests(N, MaxBatchSize)].
 
-do_enqueue(From, Sync, MsgOrBatch, S0 = #s{n = N, batch = Batch, pending_replies = Replies}) ->
-    NMax = application:get_env(emqx_durable_storage, egress_batch_size, 1000),
-    S1 =
-        case MsgOrBatch of
-            {atomic, NumMsgs, Msgs} ->
-                S0#s{n = N + NumMsgs, batch = Msgs ++ Batch};
-            Msg ->
-                S0#s{n = N + 1, batch = [Msg | Batch]}
-        end,
-    S2 =
-        case N >= NMax of
-            true ->
-                _ = erlang:cancel_timer(S0#s.tref),
-                do_flush(S1);
-            false ->
-                S1
-        end,
-    %% TODO: later we may want to delay the reply until the message is
-    %% replicated, but it requies changes to the PUBACK/PUBREC flow to
-    %% allow for async replies. For now, we ack when the message is
-    %% _buffered_ rather than stored.
-    %%
-    %% Otherwise, the client would freeze for at least flush interval,
-    %% or until the buffer is filled.
-    S =
-        case Sync of
-            true ->
-                S2#s{pending_replies = [From | Replies]};
-            false ->
-                gen_server:reply(From, ok),
-                S2
-        end,
-    %% TODO: add a backpressure mechanism for the server to avoid
-    %% building a long message queue.
-    {noreply, S}.
-
-start_timer() ->
-    Interval = application:get_env(emqx_durable_storage, egress_flush_interval, 100),
-    erlang:send_after(Interval, self(), ?flush).
-
-shard_leader(DB, Shard) ->
-    %% TODO: use optvar
-    case emqx_ds_replication_layer_meta:shard_leader(DB, Shard) of
-        {ok, Leader} ->
-            Leader;
-        {error, no_leader_for_shard} ->
-            timer:sleep(500),
-            shard_leader(DB, Shard)
+drain_requests(M, M) ->
+    %% NOTE: Sticking the batch size to the end of the batch itself.
+    [M];
+drain_requests(N, M) ->
+    receive
+        Req = {_Pid, _Ref, #message{}} ->
+            [Req | drain_requests(N + 1, M)];
+        Req = {_Pid, _Ref, {atomic, N, _}} ->
+            [Req | drain_requests(N, M)]
+    after ?DRAIN_TIMEOUT ->
+        %% TODO: Performs ugly if rate of incoming messages is close to 1 msg/ms,
+        [N]
     end.
+
+flush(Requests, #s{db = DB, shard = Shard}) ->
+    Messages = make_batch(Requests),
+    case emqx_ds_replication_layer:ra_store_batch(DB, Shard, Messages) of
+        ok ->
+            Size = reply(ok, Requests),
+            ?tp(
+                emqx_ds_replication_layer_egress_flush,
+                #{db => DB, shard => Shard, size => Size}
+            ),
+            ok;
+        {error, Reason} ->
+            Size = reply(error, Requests),
+            ?tp(
+                warning,
+                emqx_ds_replication_layer_egress_flush_failed,
+                #{db => DB, shard => Shard, size => Size, reason => Reason}
+            ),
+            ok = cooldown(),
+            {error, Reason}
+    end.
+
+make_batch([{_Pid, _Ref, {atomic, _, Messages}} | Rest]) ->
+    Messages ++ make_batch(Rest);
+make_batch([{_Pid, _Ref, Message} | Rest]) ->
+    [Message | make_batch(Rest)].
+
+reply(Result, [{Pid, Ref, _} | Rest]) ->
+    erlang:send(Pid, {Ref, Result}),
+    reply(Result, Rest);
+reply(_Result, [Size]) when is_integer(Size) ->
+    Size.
+
+cooldown() ->
+    Timeout = ?COOLDOWN_TIMEOUT_MIN + rand:uniform(?COOLDOWN_TIMEOUT_MAX - ?COOLDOWN_TIMEOUT_MIN),
+    timer:sleep(Timeout).
+
+max_batch_size() ->
+    max(1, application:get_env(emqx_durable_storage, egress_batch_size, 1000)).

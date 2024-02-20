@@ -760,6 +760,9 @@ ensure_quota(PubRes, Channel = #channel{quota = Limiter}) ->
 pubrec_reason_code([]) -> ?RC_NO_MATCHING_SUBSCRIBERS;
 pubrec_reason_code([_ | _]) -> ?RC_SUCCESS.
 
+puback_reason_code(_PacketId, _Msg, [{error, _Reason}]) ->
+    %% FIXME
+    undefined;
 puback_reason_code(PacketId, Msg, [] = PubRes) ->
     emqx_hooks:run_fold('message.puback', [PacketId, Msg, PubRes], ?RC_NO_MATCHING_SUBSCRIBERS);
 puback_reason_code(PacketId, Msg, [_ | _] = PubRes) ->
