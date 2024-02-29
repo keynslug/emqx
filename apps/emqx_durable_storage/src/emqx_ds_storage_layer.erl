@@ -676,7 +676,9 @@ rocksdb_open(Shard, Options) ->
     DBOptions = [
         {create_if_missing, true},
         {create_missing_column_families, true},
-        {enable_write_thread_adaptive_yield, false}
+        {enable_write_thread_adaptive_yield, false},
+        {manual_wal_flush, true},
+        {atomic_flush, true}
         | maps:get(db_options, Options, [])
     ],
     DBDir = db_dir(Shard),

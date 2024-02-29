@@ -263,7 +263,7 @@ store_batch(_ShardId, S = #s{db = DB, data = Data}, Messages, _Options) ->
         fun(Msg) ->
             {Key, _} = make_key(S, Msg),
             Val = serialize(Msg),
-            rocksdb:put(DB, Data, Key, Val, [])
+            rocksdb:put(DB, Data, Key, Val, [{disable_wal, true}])
         end,
         Messages
     ).
@@ -744,7 +744,7 @@ make_keymapper(TopicIndexBytes, BitsPerTopicLevel, TSBits, TSOffsetBits, N) ->
 -spec restore_trie(pos_integer(), rocksdb:db_handle(), rocksdb:cf_handle()) -> emqx_ds_lts:trie().
 restore_trie(TopicIndexBytes, DB, CF) ->
     PersistCallback = fun(Key, Val) ->
-        rocksdb:put(DB, CF, term_to_binary(Key), term_to_binary(Val), [])
+        rocksdb:put(DB, CF, term_to_binary(Key), term_to_binary(Val), [{disable_wal, true}])
     end,
     {ok, IT} = rocksdb:iterator(DB, CF, []),
     try
