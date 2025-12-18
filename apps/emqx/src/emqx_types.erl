@@ -247,7 +247,7 @@
     %% legacy format
     | {username_re, {_RE :: tuple(), binary()}}.
 
--type deliver() :: {deliver, topic(), message()}.
+-type deliver() :: #deliver{}.
 -type delivery() :: #delivery{}.
 -type deliver_result() :: ok | {ok, non_neg_integer()} | {error, term()}.
 -type publish_result() ::

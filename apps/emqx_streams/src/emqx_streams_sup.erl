@@ -4,6 +4,8 @@
 
 -module(emqx_streams_sup).
 
+-include("emqx_streams_internal.hrl").
+
 -export([
     start_link/0,
     start_post_starter/1,
@@ -52,12 +54,18 @@ init(?ROOT_SUP) ->
     ],
     {ok, {SupFlags, ChildSpecs}};
 init(?GC_SUP) ->
+    PoolSpec = emqx_pool_sup:spec(
+        emqx_streams_pool_generic,
+        [?POOL_GENERIC, random, {emqx_pool, start_link, []}]
+    ),
     SupFlags = #{
         strategy => one_for_one,
         intensity => 10,
         period => 10
     },
-    ChildSpecs = [],
+    ChildSpecs = [
+        PoolSpec
+    ],
     {ok, {SupFlags, ChildSpecs}}.
 
 post_start_child_spec(MFA) ->

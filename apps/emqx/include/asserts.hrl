@@ -85,6 +85,10 @@
     ?assertEqual(lists:sort(A), lists:sort(B))
 ).
 
+-define(assertSameSet(A, B, COMMENT),
+    ?assertEqual(lists:sort(A), lists:sort(B), COMMENT)
+).
+
 -define(assertExceptionOneOf(CT1, CT2, EXPR),
     (fun() ->
         X__Attrs = [

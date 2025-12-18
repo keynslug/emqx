@@ -27,6 +27,7 @@ start(_StartType, _StartArgs) ->
 do_start() ->
     ok = mria:wait_for_tables(emqx_streams_registry:create_tables()),
     ok = emqx_streams_message_db:open(),
+    ok = emqx_streams_state_db:open(),
     {ok, _} = emqx_streams_sup:start_post_starter({?MODULE, start_link_post_start, []}),
     ok.
 
@@ -64,6 +65,7 @@ start_link_post_start() ->
 
 post_start() ->
     ok = emqx_streams_message_db:wait_readiness(infinity),
+    ok = emqx_streams_state_db:wait_readiness(infinity),
     complete_start(),
     optvar:set(?OPTVAR_READY, true).
 

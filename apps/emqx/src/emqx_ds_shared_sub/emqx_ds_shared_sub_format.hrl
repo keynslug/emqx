@@ -11,7 +11,6 @@
 
 -define(format_borrower_msg(Msg), emqx_ds_shared_sub_format:format_borrower_msg(Msg)).
 -define(format_leader_msg(Msg), emqx_ds_shared_sub_format:format_leader_msg(Msg)).
--define(format_borrower(Subscriber), emqx_ds_shared_sub_format:format_borrower(Subscriber)).
 -define(format_stream(Stream), emqx_ds_shared_sub_format:format_stream(Stream)).
 -define(format_borrower_id(BorrowerId),
     emqx_ds_shared_sub_format:format_borrower_id(BorrowerId)
@@ -29,7 +28,6 @@
 
 -define(format_borrower_msg(Msg), Msg).
 -define(format_leader_msg(Msg), Msg).
--define(format_borrower(Subscriber), Subscriber).
 -define(format_stream(Stream), Stream).
 -define(format_borrower_id(BorrowerId), BorrowerId).
 -define(format_borrower_ids(SubscriptionIds), SubscriptionIds).

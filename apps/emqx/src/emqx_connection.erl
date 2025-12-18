@@ -1207,6 +1207,7 @@ inc_metrics(Name, State, Val) ->
 
 -compile({inline, [next_msgs/1]}).
 next_msgs(Packet) when is_record(Packet, mqtt_packet) ->
+    %% TODO
     {outgoing, Packet};
 next_msgs(Event) when is_tuple(Event) ->
     Event;

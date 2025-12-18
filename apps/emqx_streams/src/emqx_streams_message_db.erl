@@ -35,8 +35,15 @@ Facade for all operations with the message database.
 ]).
 
 -export([
+    make_iterator/3,
+    subscribe/2,
+    unsubscribe/2
+]).
+
+-export([
     encode_message/1,
-    decode_message/1
+    decode_message/1,
+    stream_message_topic/2
 ]).
 
 -export([
@@ -282,6 +289,16 @@ subscribe(Stream, DSClient0, SubId, State0) ->
     }),
     {ok, DSClient, State} = emqx_ds_client:subscribe(DSClient0, SubOpts, State0),
     {ok, DSClient, State}.
+
+make_iterator(Stream, DSStream, StartTime) ->
+    emqx_ds:make_iterator(db(Stream), DSStream, ['#'], StartTime).
+
+subscribe(Stream, DSIterator) ->
+    SubOpts = #{max_unacked => emqx_streams_prop:max_unacked(Stream)},
+    emqx_ds:subscribe(db(Stream), DSIterator, SubOpts).
+
+unsubscribe(Stream, DSSubHandle) ->
+    emqx_ds:unsubscribe(db(Stream), DSSubHandle).
 
 -spec find_generation(emqx_streams_types:stream(), emqx_ds:shard(), emqx_ds:time()) ->
     {ok, emqx_ds:generation()} | {error, term()}.

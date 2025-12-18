@@ -38,4 +38,16 @@
     lts_threshold_spec => {simple, {100, 0, 0, 100, 0}}
 }).
 
+-define(streamgroup(GROUP, STREAM), <<GROUP/binary, ":", STREAM/binary>>).
+
+-record(pdisp_group_st, {revision, leases, consumers, partitions}).
+-record(pdisp_command, {group, c, context}).
+
+-record(pdisp_message, {group, msg}).
+
+% -record(pdisp_info, {group, msg}).
+% -record(pdisp_extsub, {group, msg}).
+
+-define(POOL_GENERIC, emqx_streams_pool_generic).
+
 -endif.
