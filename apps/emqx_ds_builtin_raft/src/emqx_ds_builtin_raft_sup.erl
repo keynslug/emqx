@@ -26,12 +26,6 @@
 
 -define(top, ?MODULE).
 -define(databases, emqx_ds_builtin_databases_sup).
--define(gvar_tab, emqx_ds_builtin_gvar).
-
--record(gvar, {
-    k :: {emqx_ds:db(), _Key},
-    v :: _Value
-}).
 
 %%================================================================================
 %% API functions
@@ -66,7 +60,7 @@ stop_db(DB) ->
             ok
     end.
 
--spec which_dbs() -> {ok, [emqx_ds:db()]} | {error, inactive}.
+-spec which_dbs() -> [emqx_ds:db()] | {error, inactive}.
 which_dbs() ->
     case whereis(?databases) of
         Pid when is_pid(Pid) ->
@@ -105,7 +99,6 @@ init(?top) ->
         type => supervisor,
         shutdown => infinity
     },
-    _ = ets:new(?gvar_tab, [named_table, set, public, {keypos, #gvar.k}, {read_concurrency, true}]),
     SupFlags = #{
         strategy => one_for_all,
         intensity => 1,
