@@ -22,30 +22,12 @@
 suite() -> [{timetrap, {minutes, 1}}].
 
 all() ->
-    [
-        {group, shared_subs},
-        {group, non_shared_subs}
-    ].
-
-groups() ->
-    AllTCs = emqx_common_test_helpers:all(?MODULE),
-    [
-        {shared_subs, AllTCs},
-        {non_shared_subs, AllTCs}
-    ].
+    emqx_common_test_helpers:all(?MODULE).
 
 init_per_suite(Config) ->
     Config.
 
 end_per_suite(_Config) ->
-    ok.
-
-init_per_group(shared_subs, Config) ->
-    [{is_shared_sub, true} | Config];
-init_per_group(non_shared_subs, Config) ->
-    [{is_shared_sub, false} | Config].
-
-end_per_group(_Group, _Config) ->
     ok.
 
 init_per_testcase(TCName, Config) ->
@@ -127,7 +109,7 @@ conf_mqtt_listener(_) ->
     "".
 
 conf_log() ->
-    "log.file { enable = true, level = info, path = node.log, supervisor_reports = progress }".
+    "log.file { enable = true, level = info, path = node.log }".
 
 combine([Entry | Rest]) ->
     lists:foldl(fun emqx_cth_suite:merge_config/2, Entry, Rest).
@@ -176,7 +158,17 @@ t_message_forwarding('end', Config) ->
     ok = emqx_cth_cluster:stop(?config(target_nodes, Config)).
 
 t_message_forwarding(Config) ->
-    IsShared = ?config(is_shared_sub, Config),
+    test_message_forwarding(regular, Config).
+
+t_message_forwarding_sharesub('init', Config) ->
+    t_message_forwarding('init', Config);
+t_message_forwarding_sharesub('end', Config) ->
+    t_message_forwarding('end', Config).
+
+t_message_forwarding_sharesub(Config) ->
+    test_message_forwarding(shared, Config).
+
+test_message_forwarding(SubType, Config) ->
     SourceNodes = [SourceNode1 | _] = nodes_source(Config),
     TargetNodes = [TargetNode1, TargetNode2 | _] = nodes_target(Config),
     %% Connect client to the target cluster.
@@ -187,8 +179,8 @@ t_message_forwarding(Config) ->
     ?check_trace(
         try
             %% Subscribe both to different topics.
-            T11 = maybe_shared_topic(IsShared, <<"t1/+">>),
-            T12 = maybe_shared_topic(IsShared, <<"t1/#">>),
+            T11 = mk_topic(SubType, <<"t1/+">>),
+            T12 = mk_topic(SubType, <<"t1/#">>),
             {ok, _, _} = emqtt:subscribe(TargetC1, T11, qos1),
             {ok, _, _} = emqtt:subscribe(TargetC2, T12, qos1),
             %% Start cluster link, existing routes should be replicated.
@@ -213,8 +205,8 @@ t_message_forwarding(Config) ->
                 {publish, #{}}
             ),
             %% Subscribe both clients to another pair of topics while cluster link is active.
-            T21 = maybe_shared_topic(IsShared, <<"t2/#">>),
-            T22 = maybe_shared_topic(IsShared, <<"t2/+/+">>),
+            T21 = mk_topic(SubType, <<"t2/#">>),
+            T22 = mk_topic(SubType, <<"t2/+/+">>),
             {ok, _, _} = emqtt:subscribe(TargetC1, T21, qos1),
             {ok, _, _} = emqtt:subscribe(TargetC2, T22, qos1),
             {ok, _} = ?block_until(#{?snk_kind := "cluster_link_route_sync_complete"}),
@@ -265,9 +257,8 @@ t_target_extrouting_gc(Config) ->
     TargetC2 = emqx_cluster_link_cth:connect_client_unlink("t_target_extrouting_gc2", TargetNode2),
     ?check_trace(
         begin
-            IsShared = ?config(is_shared_sub, Config),
-            TopicFilter1 = maybe_shared_topic(IsShared, <<"t/+">>),
-            TopicFilter2 = maybe_shared_topic(IsShared, <<"t/#">>),
+            TopicFilter1 = <<"t/+">>,
+            TopicFilter2 = <<"t/#">>,
             {ok, _, _} = emqtt:subscribe(TargetC1, TopicFilter1, qos1),
             {ok, _, _} = emqtt:subscribe(TargetC2, TopicFilter2, qos1),
             {ok, _} = ?block_until(#{
@@ -286,14 +277,14 @@ t_target_extrouting_gc(Config) ->
             %% would stay down and stop replicating messages.
             {ok, _} = ?wait_async_action(
                 emqx_cth_cluster:stop_node(TargetNode2),
-                #{?snk_kind := clink_extrouter_actor_cleaned, cluster := <<"cl.target">>}
+                #{?snk_kind := "cluster_link_extrouter_actor_cleaned", cluster := <<"cl.target">>}
             ),
             {ok, _} = emqtt:publish(SourceC1, <<"t/4/ext">>, <<"HELLO4">>, qos1),
             {ok, _} = emqtt:publish(SourceC1, <<"t/5">>, <<"HELLO5">>, qos1),
             Pubs2 = [M || {publish, M} <- ?drainMailbox(1_000)],
             {ok, _} = ?wait_async_action(
                 emqx_cth_cluster:stop_node(TargetNode1),
-                #{?snk_kind := clink_extrouter_actor_cleaned, cluster := <<"cl.target">>}
+                #{?snk_kind := "cluster_link_extrouter_actor_cleaned", cluster := <<"cl.target">>}
             ),
             ok = emqtt:stop(SourceC1),
             %% Verify that extrouter table eventually becomes empty.
@@ -578,10 +569,10 @@ t_graceful_retry_on_actor_error(Config) ->
 
 %%
 
-maybe_shared_topic(true = _IsShared, Topic) ->
-    <<"$share/test-group/", Topic/binary>>;
-maybe_shared_topic(false = _IsShared, Topic) ->
-    Topic.
+mk_topic(regular, Topic) ->
+    Topic;
+mk_topic(shared, Topic) ->
+    <<"$share/test-group/", Topic/binary>>.
 
 fmt(Fmt, Args) ->
     emqx_utils:format(Fmt, Args).
