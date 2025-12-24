@@ -14,11 +14,6 @@ on:
 
 env:
   IS_CI: "yes"
-  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-permissions:
-  contents: read
-  pull-requests: write
 
 jobs:
   # Preconditions:
@@ -30,6 +25,8 @@ jobs:
     steps:
       - name: check preconditions
         id: decide
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if [ -n "${{ inputs.pr-number || '' }}" ]; then
             labels=$(gh --repo ${{ github.repository }} pr view ${{ inputs.pr-number }} --json labels | jq -r '.labels[].name')
@@ -87,12 +84,20 @@ jobs:
     if: needs.depxref.outputs.issues-found == 'true' && inputs.pr-number
     runs-on: ${{ github.repository_owner == 'emqx' && 'aws-ubuntu22.04-amd64' || 'ubuntu-22.04' }}
     steps:
+      - name: issue GitHub App token
+        id: token
+        uses: actions/create-github-app-token@29824e69f54612133e76f7eaac726eef6c875baf # v2.2.1
+        with:
+          app-id: ${{ vars.AUTH_APP_ID }}
+          private-key: ${{ secrets.AUTH_APP_PRIVATE_KEY }}
       - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
         with:
           name: depxref-report
       - name: leave comment
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
         run: |
-          echo "# [Depxref] Application dependency issues" > depxref-comment.md
+          echo "## [Depxref] Application dependency issues" > depxref-comment.md
           echo "" >> depxref-comment.md
           cat depxref-report.md >> depxref-comment.md
           gh --repo ${{ github.repository }} pr comment ${{ inputs.pr-number }} --create-if-none --edit-last --body-file depxref-comment.md
