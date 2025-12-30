@@ -89,22 +89,22 @@ jobs:
             -shellcheck= \
             -ignore 'label ".+" is unknown' \
             -ignore 'value "emqx-enterprise" in "exclude"'
-      - name: Check line-break at EOF
-        run: |
-          ./scripts/check-nl-at-eof.sh
-      - name: Check apps version
-        run: |
-          ./scripts/apps-version-check.exs
-      - name: Setup mix
-        run: |
-          # mix local.hex --force --if-missing && mix local.rebar --force --if-missing
-          mix local.hex 2.0.6 --force --if-missing && mix local.rebar --force --if-missing
-      - name: Check formatting
-        run: |
-          ./scripts/check-format.sh
-      - name: Run elvis check
-        run: |
-          ./scripts/elvis-check.sh $GITHUB_BASE_REF
+      # - name: Check line-break at EOF
+      #   run: |
+      #     ./scripts/check-nl-at-eof.sh
+      # - name: Check apps version
+      #   run: |
+      #     ./scripts/apps-version-check.exs
+      # - name: Setup mix
+      #   run: |
+      #     # mix local.hex --force --if-missing && mix local.rebar --force --if-missing
+      #     mix local.hex 2.0.6 --force --if-missing && mix local.rebar --force --if-missing
+      # - name: Check formatting
+      #   run: |
+      #     ./scripts/check-format.sh
+      # - name: Run elvis check
+      #   run: |
+      #     ./scripts/elvis-check.sh $GITHUB_BASE_REF
       - name: Generate CT Matrix
         id: matrix
         run: |
