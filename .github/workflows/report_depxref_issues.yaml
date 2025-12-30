@@ -35,22 +35,22 @@ jobs:
     runs-on: ${{ github.repository_owner == 'emqx' && 'aws-ubuntu22.04-amd64' || 'ubuntu-22.04' }}
     steps:
       - name: inspect event
-        run: echo "${{ toJSON(github.event) }}" | jq
+        run: cat ${GITHUB_EVENT_PATH} | jq
       - name: check preconditions
         id: decide
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          GH_REPO="${{ github.event.repository }}"
+          GH_REPO="${{ github.repository }}"
           GH_PR_NUMBER="${{ inputs.pr-number || github.event.workflow_run.pull_requests[0].number }}"
 
           if [ "${GH_PR_NUMBER}" == "" ]; then
-            echo "Skipping: no associated pull request" && exit 0
+            echo 'Skipping: no associated pull request' && exit 0
           fi
 
-          GH_PR_LABEL="$(gh --repo ${GH_REPO} pr view ${GH_PR_NUMBER} --json labels --jq '.labels[].name | select(.name == "depxref")')"
+          GH_PR_LABEL="$(gh --repo ${GH_REPO} pr view ${GH_PR_NUMBER} --json labels --jq '.labels[].name | select(. == "depxref")')"
           if [ "${GH_PR_LABEL}" == "" ]; then
-            echo "Skipping: pull request has no `depxref` label" && exit 0
+            echo 'Skipping: pull request has no `depxref` label' && exit 0
           fi
 
           GH_RUN_ID="${{ inputs.workflow-run-id || github.event.workflow_run.id }}"
@@ -88,18 +88,29 @@ jobs:
             echo "emqx-compiled=true" | tee -a $GITHUB_OUTPUT
           fi
 
-      - name: workaround safe directory
-        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
-
       # Relies on `.git` directory being present:
       - name: compile report
         if: steps.artifact.outputs.emqx-compiled == 'true'
         id: report
         run: |
           source ./env.sh
-          docker run --rm -v $PWD:$PWD --workdir $PWD --env "PROFILE=emqx-enterprise" "${EMQX_BUILDER}" bash -c '
-            make make elixir-common-deps
-            if ! (./scripts/report-depxref-issues.sh $(./scripts/find-changed-apps.sh ${{ needs.init.outputs.base-sha }})); then
+          docker run --rm -v $PWD:$PWD --workdir $PWD "${EMQX_BUILDER}" bash -c '
+
+            # workaround safe directory error
+            git config --global --add safe.directory $PWD
+
+            # use release profile
+            export PROFILE=emqx-enterprise
+
+            # determine affected apps
+            APPS="$(./scripts/find-changed-apps.sh ${{ needs.init.outputs.base-sha }})"
+            if [ "${APPS}" = "" ]; then
+              echo 'Skipping: no apps changed in the PR' && exit 0
+            fi
+
+            # run analysis
+            make elixir-common-deps
+            if ! (mix emqx.depxref --output=depxref-report.md ${APPS}); then
               if [ -f "depxref-report.md" ]; then
                 echo "issues-found=true" | tee -a $GITHUB_OUTPUT
               else
