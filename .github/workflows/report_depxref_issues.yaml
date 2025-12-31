@@ -9,9 +9,6 @@ on:
       workflow-run-id:
         required: true
         type: string
-      git-base-sha:
-        required: true
-        type: string
   workflow_run:
     workflows: ["PR Entrypoint"]
     types:
@@ -32,6 +29,7 @@ jobs:
       pr-number: ${{ steps.decide.outputs.pr-number }}
       run-id: ${{ steps.decide.outputs.run-id }}
       base-sha: ${{ steps.decide.outputs.base-sha }}
+      head-sha: ${{ steps.decide.outputs.head-sha }}
     runs-on: ${{ github.repository_owner == 'emqx' && 'aws-ubuntu22.04-amd64' || 'ubuntu-22.04' }}
     steps:
       - name: inspect event
@@ -59,12 +57,18 @@ jobs:
           fi
 
           GH_RUN_ID="${{ inputs.workflow-run-id || github.event.workflow_run.id }}"
-          GH_BASE_SHA="${{ inputs.git-base-sha || github.event.workflow_run.pull_requests[0].base.sha }}"
+
+          GH_PR_REFS="$(gh pr --repo ${GH_REPO} view ${GH_PR_NUMBER} --json baseRefOid,headRefOid)"
+          GH_BASE_SHA="${{ github.event.workflow_run.pull_requests[0].base.sha }}"
+          GH_BASE_SHA="${GH_BASE_SHA:-$(echo ${GH_PR_REFS} | jq -r .baseRefOid)}"
+          GH_HEAD_SHA="${{ github.event.workflow_run.head_sha }}"
+          GH_HEAD_SHA="${GH_HEAD_SHA:-$(echo ${GH_PR_REFS} | jq -r .headRefOid)}"
 
           echo "proceed=true"              | tee -a $GITHUB_OUTPUT
           echo "pr-number=${GH_PR_NUMBER}" | tee -a $GITHUB_OUTPUT
           echo "run-id=${GH_RUN_ID}"       | tee -a $GITHUB_OUTPUT
           echo "base-sha=${GH_BASE_SHA}"   | tee -a $GITHUB_OUTPUT
+          echo "head-sha=${GH_HEAD_SHA}"   | tee -a $GITHUB_OUTPUT
 
   # Main job:
   depxref:
