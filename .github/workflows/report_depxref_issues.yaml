@@ -125,7 +125,13 @@ jobs:
         run: |
           GH_CHECK_CONCLUSION="${{ steps.report.outputs.issues-found == 'true' && 'neutral' || 'success' }}"
           if [ "${GH_CHECK_CONCLUSION}" = "neutral" ]; then
-            GH_API_ARGS="-F output[summary]=@depxref-summary -F output[text]=@depxref-report.md"
+            GH_API_ARGS=(
+              -f 'output[title]=Application dependency issues found'
+              -F 'output[summary]=@depxref-summary'
+              -F 'output[text]=@depxref-report.md'
+            )
+          else
+            GH_API_ARGS=(-f 'output[title]=Everything good')
           fi
           gh api \
             --method POST \
@@ -136,8 +142,7 @@ jobs:
              -f 'head_sha=${{ needs.init.outputs.head-sha }}' \
              -f 'status=completed' \
              -f 'conclusion='${GH_CHECK_CONCLUSION} \
-             -f 'output[title]=Depxref' \
-             ${GH_API_ARGS}
+             "${GH_API_ARGS[@]}"
 
       - name: leave comment
         if: steps.report.outputs.issues-found == 'true'
