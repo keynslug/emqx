@@ -118,7 +118,8 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.token.outputs.token }} # ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "## [Depxref] Application dependency issues" > depxref-comment.md
-          echo "" >> depxref-comment.md
-          cat depxref-report.md >> depxref-comment.md
+          echo "## Depxref"                                  > depxref-comment.md
+          echo "Application dependency issues were found."  >> depxref-comment.md
+          echo ""                                           >> depxref-comment.md
+          cat depxref-report.md                             >> depxref-comment.md
           gh --repo ${{ github.repository }} pr comment ${{ needs.init.outputs.pr-number }} --create-if-none --edit-last --body-file depxref-comment.md
