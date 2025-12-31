@@ -90,12 +90,10 @@ jobs:
         run: |
           if [ -f emqx-enterprise-release.zip ]; then
             unzip -o -q emqx-enterprise-release.zip
-            echo "emqx-compiled=true" | tee -a $GITHUB_OUTPUT
           fi
 
       # Relies on `.git` directory being present:
       - name: compile report
-        if: steps.artifact.outputs.emqx-compiled == 'true'
         id: report
         run: |
           source ./env.sh
