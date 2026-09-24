@@ -21,7 +21,11 @@ init_per_suite(Config) ->
                 "listeners.tcp.default.tcp_backend = socket\n"
                 "listeners.tcp.default.tcp_options.active_n = 10\n"
                 "listeners.tcp.default.tcp_options.high_watermark = 5\n"
-                "listeners.tcp.default.tcp_options.send_timeout = 2s\n"}
+                "listeners.tcp.default.tcp_options.send_timeout = 2s\n"
+                "force_shutdown.max_mailbox_size = 240000\n"
+                "force_shutdown.max_heap_size = 512MB\n"
+                "mqtt.max_inflight = 1000\n"
+                "mqtt.max_mqueue_len = 240000\n"}
         ],
         #{work_dir => emqx_cth_suite:work_dir(Config)}
     ),
@@ -29,6 +33,65 @@ init_per_suite(Config) ->
 
 end_per_suite(Config) ->
     emqx_cth_suite:stop(proplists:get_value(apps, Config)).
+
+t_socket_delivers_publish_burst(_) ->
+    Counter = counters:new(1, [write_concurrency]),
+    ClientId = <<"socket-burst-subscriber">>,
+    {ok, Client} = emqtt:start_link(#{
+        clientid => ClientId,
+        msg_handler => #{publish => fun(_) -> counters:add(Counter, 1, 1) end}
+    }),
+    {ok, _} = emqtt:connect(Client),
+    {ok, _, [?QOS_1]} = emqtt:subscribe(Client, <<"t/#">>, ?QOS_1),
+    [ConnPid] = emqx_cm:lookup_channels(ClientId),
+    ok = sys:suspend(ConnPid),
+    Workers = [
+        spawn_opt(
+            fun() ->
+                Topic = <<"t/", (integer_to_binary(Num))/binary>>,
+                Payload = binary:copy(<<"x">>, 64),
+                lists:foreach(
+                    fun(_) ->
+                        _ = emqx:publish(
+                            emqx_message:make(<<"publisher">>, ?QOS_1, Topic, Payload)
+                        )
+                    end,
+                    lists:seq(1, 5_000)
+                )
+            end,
+            [link, monitor]
+        )
+     || Num <- lists:seq(1, 40)
+    ],
+    lists:foreach(
+        fun({Pid, Ref}) ->
+            receive
+                {'DOWN', Ref, process, Pid, normal} -> ok;
+                {'DOWN', Ref, process, Pid, Reason} -> ct:fail({publisher_failed, Reason})
+            after 30_000 ->
+                ct:fail(publisher_timeout)
+            end
+        end,
+        Workers
+    ),
+    {message_queue_len, QueueLen} = process_info(ConnPid, message_queue_len),
+    ?assert(QueueLen >= 200_000),
+    Started = erlang:monotonic_time(microsecond),
+    ok = sys:resume(ConnPid),
+    Count = wait_for_deliveries(Counter, 200_000, Started + 5_000_000),
+    ElapsedMs = (erlang:monotonic_time(microsecond) - Started) / 1_000,
+    ct:pal("QoS 1 deliveries: ~B in ~.1f ms", [Count, ElapsedMs]),
+    ?assert(Count >= 200_000).
+
+wait_for_deliveries(Counter, Expected, Deadline) ->
+    Count = counters:get(Counter, 1),
+    case Count >= Expected orelse erlang:monotonic_time(microsecond) >= Deadline of
+        true ->
+            Count;
+        false ->
+            timer:sleep(1),
+            wait_for_deliveries(Counter, Expected, Deadline)
+    end.
 
 t_send_congestion_times_out(_) ->
     Self = self(),
