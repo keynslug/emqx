@@ -447,35 +447,28 @@ handle_recv({'EXIT', Parent, Reason}, Parent, State) ->
     %% FIXME: it's not trapping exit, should never receive an EXIT
     terminate(Reason, State);
 handle_recv(Msg, Parent, State) ->
-    Counters = {emqx_pd:get_counter(recv_msg), emqx_pd:get_counter(send_msg)},
     case process_msg(Msg, ensure_stats_timer(State)) of
         {ok, NewState} ->
-            drain_loop(Parent, NewState, Counters);
+            drain_loop(Parent, NewState);
         {stop, Reason, NewSate} ->
             terminate(Reason, NewSate)
     end.
 
-drain_loop(Parent, State, Counters) ->
+drain_loop(Parent, State) ->
     receive
         Msg ->
-            handle_recv_drain(Msg, Parent, State, Counters)
+            handle_recv_drain(Msg, Parent, State)
     after 1 ->
-        {NR, NS} = Counters,
-        case emqx_pd:get_counter(recv_msg) > NR orelse emqx_pd:get_counter(send_msg) > NS of
-            true ->
-                run_minor_gc();
-            false ->
-                ok
-        end,
+        run_minor_gc(),
         ?MODULE:recvloop(Parent, State)
     end.
 
-handle_recv_drain({system, From, Request}, Parent, State, _Counters) ->
+handle_recv_drain({system, From, Request}, Parent, State) ->
     sys:handle_system_msg(Request, From, Parent, ?MODULE, [], State);
-handle_recv_drain(Msg, Parent, State, Counters) ->
+handle_recv_drain(Msg, Parent, State) ->
     case process_msg(Msg, State) of
         {ok, NewState} ->
-            drain_loop(Parent, NewState, Counters);
+            drain_loop(Parent, NewState);
         {stop, Reason, NewSate} ->
             terminate(Reason, NewSate)
     end.
@@ -657,13 +650,8 @@ handle_msg({outgoing, Packets}, State) ->
             Error
     end;
 handle_msg(run_minor_gc, State) ->
-    % receive
-    %     Msg ->
-    %         {ok, Msg, State}
-    % after 0 ->
     run_minor_gc(),
     {ok, State};
-% end;
 handle_msg(
     Deliver = #deliver{message = _Msg},
     #state{conf = #conf{active_n = ActiveN}} = State
@@ -867,7 +855,6 @@ handle_data(
     },
     State = trigger_gc(State1#state{thresholds = Thresholds}),
     NeedMore = RequestMore andalso SS =/= closed,
-    % Tail = [run_minor_gc || N > 0] ++ [{request_more_data, More} || NeedMore],
     Tail = [{request_more_data, More} || NeedMore],
     Msgs = next_incoming_msgs(Tail, Packets),
     {ok, Msgs, State}.
