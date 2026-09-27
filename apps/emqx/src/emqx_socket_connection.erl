@@ -634,11 +634,20 @@ handle_msg({request_more_data, More}, State = #state{socket = Socket, sockstate 
         false ->
             {ok, State}
     end;
+handle_msg({incoming, [Connect = ?PACKET(?CONNECT) | Rest]}, State) ->
+    {ok, [{incoming, Connect}, {incoming, Rest}], State};
 handle_msg({incoming, Packets}, State) when is_list(Packets) ->
-    handle_incoming_packets(Packets, State, []);
+    handle_incoming_packets(Packets, State, State#state.channel, []);
+handle_msg({incoming, Packet = ?PACKET(?CONNECT)}, State) ->
+    %% CONNECT is fully received; initialize before handling authentication or rejection.
+    ok = cancel_idle_timer(State),
+    NState = State#state{
+        serialize = emqx_frame:serialize_opts(Packet#mqtt_packet.variable),
+        stats_timer = init_stats_timer(State)
+    },
+    with_channel_result(handle_incoming(Packet, NState), NState);
 handle_msg({incoming, Packet}, State) ->
-    {Result, NState} = handle_incoming(Packet, State),
-    with_channel_result(Result, NState);
+    with_channel_result(handle_incoming(Packet, State), State);
 handle_msg({outgoing, Packets}, State) ->
     case handle_outgoing(Packets, State) of
         {ok, NState} ->
@@ -656,11 +665,11 @@ handle_msg(run_minor_gc, State) ->
     {ok, State};
 handle_msg(
     Deliver = #deliver{message = _Msg},
-    #state{conf = #conf{active_n = ActiveN}} = State
+    #state{conf = #conf{active_n = ActiveN}, channel = Channel} = State
 ) ->
     ?BROKER_INSTR_SETMARK(t0_deliver, {_Msg#message.extra, ?BROKER_INSTR_TS()}),
     Delivers = [Deliver | emqx_utils:drain_deliver(ActiveN)],
-    with_channel(handle_deliver, [Delivers], State);
+    with_channel_result(emqx_channel:handle_deliver(Delivers, Channel), State);
 handle_msg({connack, ConnAck}, State) ->
     handle_outgoing(ConnAck, State);
 handle_msg({close, Reason}, State) ->
@@ -808,10 +817,10 @@ handle_timeout(
         disconnected ->
             {ok, State};
         _ ->
-            with_channel(handle_timeout, [TRef, keepalive], State)
+            with_channel_result(emqx_channel:handle_timeout(TRef, keepalive, Channel), State)
     end;
-handle_timeout(TRef, Msg, State) ->
-    with_channel(handle_timeout, [TRef, Msg], State).
+handle_timeout(TRef, Msg, State = #state{channel = Channel}) ->
+    with_channel_result(emqx_channel:handle_timeout(TRef, Msg, Channel), State).
 
 try_set_chan_stats(State = #state{channel = Channel}) ->
     case emqx_channel:info(clientid, Channel) of
@@ -1017,91 +1026,95 @@ describe_parser_state(ParseState) ->
 %%--------------------------------------------------------------------
 %% Handle incoming packet
 
-handle_incoming(Packet = ?PACKET(Type), State) ->
+handle_incoming(Packet, State = #state{channel = Channel}) ->
+    handle_incoming(Packet, State, Channel).
+
+handle_incoming(Packet = ?PACKET(_), State, Channel) ->
     ?TRACE("MQTT", "mqtt_packet_received", #{packet => Packet}),
     inc_incoming_stats(Packet, State),
-    case Type of
-        ?CONNECT ->
-            %% CONNECT packet is fully received, time to cancel idle timer.
-            ok = cancel_idle_timer(State),
-            NState = State#state{
-                serialize = emqx_frame:serialize_opts(Packet#mqtt_packet.variable),
-                stats_timer = init_stats_timer(State)
-            },
-            {emqx_channel:handle_in(Packet, NState#state.channel), NState};
-        _ ->
-            {emqx_channel:handle_in(Packet, State#state.channel), State}
-    end;
-handle_incoming(FrameError, State) ->
+    emqx_channel:handle_in(Packet, Channel);
+handle_incoming(FrameError, _State, Channel) ->
     ?TRACE("MQTT", "mqtt_packet_received", #{packet => FrameError}),
-    {emqx_channel:handle_in(FrameError, State#state.channel), State}.
+    emqx_channel:handle_in(FrameError, Channel).
 
-handle_incoming_packets([], State, []) ->
-    {ok, State};
-handle_incoming_packets([], State, Outgoing) ->
-    {ok, {outgoing, append_reversed(Outgoing, [])}, State};
-handle_incoming_packets([Packet | Rest], State, Outgoing) ->
-    {Result, NState} = handle_incoming(Packet, State),
-    handle_incoming_packet_result(Result, NState, Rest, Outgoing).
-
-handle_incoming_packet_result({shutdown, Reason, Channel}, State, _Rest, Outgoing) ->
-    case Outgoing of
-        [] -> with_channel_result({shutdown, Reason, Channel}, State);
-        _ -> with_channel_result({shutdown, Reason, append_reversed(Outgoing, []), Channel}, State)
-    end;
-handle_incoming_packet_result({shutdown, Reason, Packet, Channel}, State, _Rest, Outgoing) ->
-    case Outgoing of
-        [] ->
-            with_channel_result({shutdown, Reason, Packet, Channel}, State);
-        _ ->
-            Packets =
-                case Packet of
-                    List when is_list(List) -> List;
-                    One -> [One]
-                end,
-            Batch = append_reversed(Outgoing, Packets),
-            with_channel_result({shutdown, Reason, Batch, Channel}, State)
-    end;
-handle_incoming_packet_result(Result, NState, Rest, Outgoing) ->
-    case with_channel_result(Result, NState) of
-        {ok, Replies, NextState} ->
+handle_incoming_packets([], State, Channel, []) ->
+    NState = State#state{channel = Channel},
+    {ok, NState};
+handle_incoming_packets([], State, Channel, Outgoing) ->
+    Batch = mk_batch(Outgoing, []),
+    NState = State#state{channel = Channel},
+    {ok, {outgoing, Batch}, NState};
+handle_incoming_packets([Packet | Rest], State, Channel, Outgoing) ->
+    case handle_incoming(Packet, State, Channel) of
+        ok ->
+            handle_incoming_packets(Rest, State, Channel, Outgoing);
+        {ok, NChannel} ->
+            handle_incoming_packets(Rest, State, NChannel, Outgoing);
+        {ok, Replies, NChannel} ->
             case collect_outgoing_replies(Replies, Outgoing) of
-                {ok, NOutgoing} ->
-                    handle_incoming_packets(Rest, NextState, NOutgoing);
-                not_batchable ->
-                    %% Let process_msg handle the reply before the remaining packets.
-                    Pending = [{outgoing, append_reversed(Outgoing, [])} || Outgoing =/= []],
-                    Remaining = [{incoming, Packet} || Packet <- Rest],
-                    {ok, [Pending, Replies | Remaining], NextState}
+                NOutgoing when is_list(NOutgoing) ->
+                    handle_incoming_packets(Rest, State, NChannel, NOutgoing);
+                unbatchable ->
+                    Pending = [{outgoing, mk_batch(Outgoing, [])} || Outgoing =/= []],
+                    Remaining = [{incoming, P} || P <- Rest],
+                    NState = State#state{channel = NChannel},
+                    {ok, Pending ++ [Replies | Remaining], NState}
             end;
-        {ok, NextState} ->
-            handle_incoming_packets(Rest, NextState, Outgoing)
+        {continue, Replies, NChannel} ->
+            %% Run the continuation before processing the remaining packets.
+            Pending = [{outgoing, mk_batch(Outgoing, [])} || Outgoing =/= []],
+            Remaining = [{incoming, P} || P <- Rest],
+            NState = State#state{channel = NChannel},
+            {ok, Pending ++ [Replies, continue | Remaining], NState};
+        {shutdown, Reason, NChannel} = Shutdown ->
+            case Outgoing of
+                [] ->
+                    with_channel_result(Shutdown, State);
+                _ ->
+                    Batch = mk_batch(Outgoing, []),
+                    with_channel_result({shutdown, Reason, Batch, NChannel}, State)
+            end;
+        {shutdown, Reason, OutPacket, NChannel} = Shutdown ->
+            case Outgoing of
+                [] ->
+                    with_channel_result(Shutdown, State);
+                _ ->
+                    Batch = mk_batch(Outgoing, ensure_list(OutPacket)),
+                    with_channel_result({shutdown, Reason, Batch, NChannel}, State)
+            end
     end.
 
 collect_outgoing_replies([], Outgoing) ->
-    {ok, Outgoing};
+    Outgoing;
 collect_outgoing_replies([Reply | Rest], Outgoing) ->
-    case collect_outgoing_reply(Reply, Outgoing) of
+    case collect_outgoing_replies(Reply, Outgoing) of
         NOutgoing when is_list(NOutgoing) ->
             collect_outgoing_replies(Rest, NOutgoing);
-        not_batchable ->
-            not_batchable
-    end.
-
-collect_outgoing_reply({outgoing, []}, Outgoing) ->
+        unbatchable ->
+            unbatchable
+    end;
+collect_outgoing_replies({outgoing, []}, Outgoing) ->
     Outgoing;
-collect_outgoing_reply({outgoing, Packets}, Outgoing) when is_list(Packets) ->
-    [Packets | Outgoing];
-collect_outgoing_reply({outgoing, Packet}, Outgoing) ->
-    [[Packet] | Outgoing];
-collect_outgoing_reply(_Reply, _Outgoing) ->
-    not_batchable.
+collect_outgoing_replies({outgoing, PacketOrPackets}, Outgoing) ->
+    [PacketOrPackets | Outgoing];
+collect_outgoing_replies(_Reply, _Outgoing) ->
+    unbatchable.
+
+%% Accumulated packets are in reverse order; preserve order within each list.
+mk_batch([List | Rest], Tail) when is_list(List) ->
+    mk_batch(Rest, List ++ Tail);
+mk_batch([Item | Rest], Tail) ->
+    mk_batch(Rest, [Item | Tail]);
+mk_batch([], Tail) ->
+    Tail.
+
+ensure_list(L) when is_list(L) ->
+    L;
+ensure_list(X) ->
+    [X].
 
 %%--------------------------------------------------------------------
 %% With Channel
-
-with_channel(Fun, Args, State = #state{channel = Channel}) ->
-    with_channel_result(erlang:apply(emqx_channel, Fun, Args ++ [Channel]), State).
 
 with_channel_result(Result, State) ->
     case Result of
@@ -1151,7 +1164,7 @@ do_handle_outgoing(Packet, State) ->
     pos_integer(), [emqx_types:packet()], state(), non_neg_integer(), non_neg_integer(), iolist()
 ) -> {ok, state()} | {ok, {sock_error, _}, state()}.
 do_handle_outgoing_loop(_, [], State, N, _BufOctets, Buf) ->
-    send(N, append_reversed(Buf, []), State);
+    send(N, append_reversed_iovec(Buf, []), State);
 do_handle_outgoing_loop(MaxBufFize, [Packet | Rest], State, N, BufOctets, Buf0) when
     BufOctets =< MaxBufFize
 ->
@@ -1166,7 +1179,7 @@ do_handle_outgoing_loop(MaxBufFize, [Packet | Rest], State, N, BufOctets, Buf0) 
         Buf
     );
 do_handle_outgoing_loop(MaxBufSize, Rest, State0, N, _BufOctets, Buf) ->
-    case send(N, append_reversed(Buf, []), State0) of
+    case send(N, append_reversed_iovec(Buf, []), State0) of
         {ok, State} ->
             do_handle_outgoing_loop(MaxBufSize, Rest, State, 0, 0, []);
         {ok, {sock_error, _}, _State} = Error ->
@@ -1174,10 +1187,9 @@ do_handle_outgoing_loop(MaxBufSize, Rest, State0, N, _BufOctets, Buf) ->
     end.
 
 %% Append the inner lists in reverse outer order, preserving their element order.
-%% Equivalent to lists:append(lists:reverse(Lists)) ++ Tail.
-append_reversed([List | Rest], Tail) ->
-    append_reversed(Rest, List ++ Tail);
-append_reversed([], Tail) ->
+append_reversed_iovec([List | Rest], Tail) ->
+    append_reversed_iovec(Rest, List ++ Tail);
+append_reversed_iovec([], Tail) ->
     Tail.
 
 serialize_and_inc_stats(#state{serialize = Serialize} = State, Packet) ->
@@ -1276,7 +1288,7 @@ handle_send_ready(
     Socket,
     State = #state{sockstate = SS = #congested{sendq = SQ, watermark = WM}}
 ) ->
-    IoVec = append_reversed(SQ, []),
+    IoVec = append_reversed_iovec(SQ, []),
     Handle = make_ref(),
     case send_iovec(Socket, IoVec, Handle) of
         ok ->
@@ -1452,8 +1464,8 @@ handle_info({sock_error, Reason}, State) ->
             ?SLOG(warning, #{msg => "socket_error", reason => Reason})
     end,
     handle_info({sock_closed, Reason}, ensure_close_socket(Reason, State));
-handle_info(Info, State) ->
-    with_channel(handle_info, [Info], State).
+handle_info(Info, State = #state{channel = Channel}) ->
+    with_channel_result(emqx_channel:handle_info(Info, Channel), State).
 
 %%--------------------------------------------------------------------
 %% Handle Info
