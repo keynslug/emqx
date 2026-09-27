@@ -1055,17 +1055,11 @@ handle_incoming_packets([Packet | Rest], State, Channel, Outgoing) ->
                 NOutgoing when is_list(NOutgoing) ->
                     handle_incoming_packets(Rest, State, NChannel, NOutgoing);
                 unbatchable ->
-                    Pending = [{outgoing, mk_batch(Outgoing, [])} || Outgoing =/= []],
-                    Remaining = [{incoming, P} || P <- Rest],
-                    NState = State#state{channel = NChannel},
-                    {ok, Pending ++ [Replies | Remaining], NState}
+                    handle_unbatchable([Replies], Rest, State, NChannel, Outgoing)
             end;
         {continue, Replies, NChannel} ->
             %% Run the continuation before processing the remaining packets.
-            Pending = [{outgoing, mk_batch(Outgoing, [])} || Outgoing =/= []],
-            Remaining = [{incoming, P} || P <- Rest],
-            NState = State#state{channel = NChannel},
-            {ok, Pending ++ [Replies, continue | Remaining], NState};
+            handle_unbatchable([Replies, continue], Rest, State, NChannel, Outgoing);
         {shutdown, Reason, NChannel} = Shutdown ->
             case Outgoing of
                 [] ->
@@ -1083,6 +1077,12 @@ handle_incoming_packets([Packet | Rest], State, Channel, Outgoing) ->
                     with_channel_result({shutdown, Reason, Batch, NChannel}, State)
             end
     end.
+
+handle_unbatchable(Replies, Rest, State, Channel, Outgoing) ->
+    Pending = [{outgoing, mk_batch(Outgoing, [])} || Outgoing =/= []],
+    Remaining = [{incoming, P} || P <- Rest],
+    NState = State#state{channel = Channel},
+    {ok, Pending ++ Replies ++ Remaining, NState}.
 
 collect_outgoing_replies([], Outgoing) ->
     Outgoing;
