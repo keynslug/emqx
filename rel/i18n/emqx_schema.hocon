@@ -1355,6 +1355,14 @@ Note: Please set the parameter with caution as long idle time will lead to resou
 mqtt_idle_timeout.label:
 """Idle Timeout"""
 
+mqtt_minor_gc_after.desc:
+"""Run a minor garbage collection after this period of mailbox inactivity on TCP connections using the `socket` backend.
+The connection then starts waiting for the `hibernate_after` timeout.
+It does not affect the `gen_tcp` backend."""
+
+mqtt_minor_gc_after.label:
+"""Minor GC After"""
+
 fields_mqtt_quic_listener_conn_flow_control_window.desc:
 """Connection-wide flow control window. Default: 16777216"""
 
